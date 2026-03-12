@@ -17,7 +17,7 @@ export interface Message {
 export const analyzeTask = async (taskText: string, fileData?: { data: string; mimeType: string }) => {
   const ai = getAI();
   const model = ai.models.generateContent({
-    model: "gemini-3.1-pro-preview",
+    model: "gemini-3-flash-preview",
     contents: [
       {
         parts: [
