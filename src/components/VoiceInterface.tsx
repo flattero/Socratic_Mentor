@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality } from "@google/genai";
+import { LiveServerMessage, Modality } from "@google/genai";
 import { Mic, MicOff, Volume2, VolumeX, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { getAI } from '../services/ai';
 
 interface VoiceInterfaceProps {
   taskSummary: string;
@@ -24,7 +25,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
     setError(null);
     
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+      const ai = getAI();
       
       audioContextRef.current = new AudioContext({ sampleRate: 16000 });
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });

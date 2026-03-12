@@ -1,8 +1,13 @@
 import { GoogleGenAI, GenerateContentResponse, Modality } from "@google/genai";
 
-const apiKey = process.env.GEMINI_API_KEY;
+const getApiKey = () => {
+  // Try to get from window (injected by server) or from the baked-in process.env
+  const key = (window as any).process?.env?.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+  return key === 'undefined' ? undefined : key;
+};
 
 export const getAI = () => {
+  const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not set");
   }
