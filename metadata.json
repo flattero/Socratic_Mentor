@@ -1,0 +1,7 @@
+{
+  "name": "Socratic Mentor",
+  "description": "An AI-powered tutor that guides students through a structured dialogue to demonstrate their understanding of any topic, supporting both text and real-time voice conversations.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
