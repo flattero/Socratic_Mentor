@@ -7,7 +7,7 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
+# Install ALL dependencies (including devDependencies for the build step)
 RUN npm install
 
 # Copy the rest of the application code
@@ -16,8 +16,11 @@ COPY . .
 # Build the Vite application
 RUN npm run build
 
-# Expose the port the app runs on (Cloud Run uses PORT env var, but 3000 is our default)
-EXPOSE 3000
+# Set the port environment variable (Cloud Run defaults to 8080)
+ENV PORT=8080
 
-# Start the application using the start script in package.json
-CMD ["npm", "start"]
+# Expose the port
+EXPOSE 8080
+
+# Start the application
+CMD ["node", "server.js"]
