@@ -13,6 +13,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
   const [isConnecting, setIsConnecting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const isMutedRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -21,6 +22,12 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
   const transcriptRef = useRef<string>("");
 
   const nextStartTimeRef = useRef<number>(0);
+
+  const toggleMute = () => {
+    const newMuted = !isMuted;
+    setIsMuted(newMuted);
+    isMutedRef.current = newMuted;
+  };
 
   const startSession = async () => {
     setIsConnecting(true);
@@ -34,8 +41,9 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
       audioContextRef.current = new AudioContext({ sampleRate: 16000 });
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
       
+      console.log("Connecting to Gemini Live API...");
       const session = await ai.live.connect({
-        model: "gemini-2.5-flash-native-audio-preview-09-2025",
+        model: "gemini-2.5-flash-native-audio-preview-12-2025",
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
@@ -56,13 +64,17 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
         },
         callbacks: {
           onopen: () => {
-            console.log("Live session opened");
+            console.log("Live session opened successfully");
             setIsConnected(true);
             setIsConnecting(false);
             if (audioContextRef.current?.state === 'suspended') {
-              audioContextRef.current.resume();
+              audioContextRef.current.resume().then(() => {
+                console.log("AudioContext resumed");
+                setupAudioInput();
+              });
+            } else {
+              setupAudioInput();
             }
-            setupAudioInput();
           },
           onmessage: async (rawMessage: LiveServerMessage) => {
             const message = rawMessage as any;
@@ -71,12 +83,14 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
             // Handle audio output
             const audioData = message.serverContent?.modelTurn?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
             if (audioData) {
+              console.log("Received audio chunk from model");
               playAudio(audioData);
             }
             
             // Handle transcriptions
             const modelText = message.serverContent?.modelTurn?.parts?.find((p: any) => p.text)?.text || message.outputAudioTranscription?.text;
             if (modelText) {
+                console.log("Model transcript:", modelText);
                 if (!transcriptRef.current.includes(`Mentor: ${modelText}`)) {
                   transcriptRef.current += `\nMentor: ${modelText}`;
                   onTranscriptUpdate(transcriptRef.current);
@@ -86,6 +100,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
             // User transcription
             if (message.inputAudioTranscription?.text) {
                 const userText = message.inputAudioTranscription.text;
+                console.log("User transcript:", userText);
                 if (!transcriptRef.current.includes(`Student: ${userText}`)) {
                   transcriptRef.current += `\nStudent: ${userText}`;
                   onTranscriptUpdate(transcriptRef.current);
@@ -114,14 +129,18 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
   };
 
   const setupAudioInput = async () => {
-    if (!streamRef.current || !audioContextRef.current || !sessionRef.current) return;
+    if (!streamRef.current || !audioContextRef.current || !sessionRef.current) {
+      console.warn("Cannot setup audio input: missing stream, context, or session");
+      return;
+    }
 
+    console.log("Setting up AudioWorklet...");
     try {
       const workletCode = `
         class AudioProcessor extends AudioWorkletProcessor {
           process(inputs, outputs, parameters) {
             const input = inputs[0];
-            if (input.length > 0) {
+            if (input && input.length > 0) {
               const floatData = input[0];
               const pcmData = new Int16Array(floatData.length);
               for (let i = 0; i < floatData.length; i++) {
@@ -142,33 +161,43 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
       const source = audioContextRef.current.createMediaStreamSource(streamRef.current);
       const workletNode = new AudioWorkletNode(audioContextRef.current, 'audio-processor');
 
+      let chunkCount = 0;
       workletNode.port.onmessage = (event) => {
-        if (isMuted || !sessionRef.current) return;
+        if (isMutedRef.current || !sessionRef.current) return;
         
         const arrayBuffer = event.data;
         const uint8Array = new Uint8Array(arrayBuffer);
+        
+        // More efficient base64 conversion
         let binary = "";
-        for (let i = 0; i < uint8Array.length; i++) {
+        const len = uint8Array.byteLength;
+        for (let i = 0; i < len; i++) {
           binary += String.fromCharCode(uint8Array[i]);
         }
         const base64Data = btoa(binary);
         
+        if (chunkCount % 100 === 0) {
+          console.log("Sending audio chunk to Gemini...");
+        }
+        chunkCount++;
+
         sessionRef.current.sendRealtimeInput({
           media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
         });
       };
 
       source.connect(workletNode);
-      workletNode.connect(audioContextRef.current.destination);
+      // We don't need to connect to destination as we only want to capture
+      console.log("AudioWorklet setup complete and connected");
     } catch (e) {
       console.error("Failed to setup AudioWorklet:", e);
-      // Fallback to ScriptProcessor if Worklet fails
       setupAudioInputFallback();
     }
   };
 
   const setupAudioInputFallback = () => {
     if (!streamRef.current || !audioContextRef.current || !sessionRef.current) return;
+    console.log("Falling back to ScriptProcessor...");
 
     const source = audioContextRef.current.createMediaStreamSource(streamRef.current);
     const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
@@ -180,7 +209,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
     silentGain.connect(audioContextRef.current.destination);
 
     processor.onaudioprocess = (e) => {
-      if (isMuted || !sessionRef.current) return;
+      if (isMutedRef.current || !sessionRef.current) return;
       
       const inputData = e.inputBuffer.getChannelData(0);
       const pcmData = new Int16Array(inputData.length);
@@ -246,8 +275,6 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
       console.error("Error playing audio chunk:", e);
     }
   };
-
-  const toggleMute = () => setIsMuted(!isMuted);
 
   const stopSession = () => {
     if (sessionRef.current) {
