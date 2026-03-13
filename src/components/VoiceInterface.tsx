@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { LiveServerMessage, Modality } from "@google/genai";
 import { Mic, MicOff, Volume2, VolumeX, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { getAI } from '../services/ai';
+import { getAI, SYSTEM_INSTRUCTION } from '../services/ai';
 import { KeyTermsList } from './KeyTermsList';
 
 interface VoiceInterfaceProps {
@@ -52,16 +52,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, key
         config: {
           responseModalities: [Modality.TEXT],
           inputAudioTranscription: {},
-          systemInstruction: `You are a Socratic Mentor. Your goal is to help the student demonstrate their understanding of the task.
-          
-          TASK CONTEXT:
-          ${taskSummary}
-          
-          RULES:
-          1. DO NOT provide answers.
-          2. Ask one question at a time.
-          3. Start with a friendly greeting and ask the first question to get the student started.
-          4. Respond ONLY with text. Do not generate audio.`,
+          systemInstruction: `${SYSTEM_INSTRUCTION}\n\nTASK CONTEXT:\n${taskSummary}\n\nADDITIONAL VOICE RULES:\n1. Start with a friendly greeting and ask the first question to get the student started.\n2. Respond ONLY with text. Do not generate audio.`,
         },
         callbacks: {
           onopen: () => {
