@@ -45,12 +45,8 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
       const session = await ai.live.connect({
         model: "gemini-2.5-flash-native-audio-preview-12-2025",
         config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
-          },
+          responseModalities: [Modality.TEXT],
           inputAudioTranscription: {},
-          outputAudioTranscription: {},
           systemInstruction: `You are a Socratic Mentor. Your goal is to help the student demonstrate their understanding of the task.
           
           TASK CONTEXT:
@@ -60,7 +56,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
           1. DO NOT provide answers.
           2. Ask one question at a time.
           3. Start with a friendly greeting and ask the first question to get the student started.
-          4. Keep responses concise for voice interaction.`,
+          4. Respond ONLY with text. Do not generate audio.`,
         },
         callbacks: {
           onopen: () => {
@@ -80,28 +76,23 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
             const message = rawMessage as any;
             console.log("Live message received:", message);
             
-            // Handle audio output
-            const audioData = message.serverContent?.modelTurn?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
-            if (audioData) {
-              console.log("Received audio chunk from model");
-              playAudio(audioData);
-            }
-            
-            // Handle transcriptions
-            const modelText = message.serverContent?.modelTurn?.parts?.find((p: any) => p.text)?.text || message.outputAudioTranscription?.text;
+            // Handle transcriptions from model
+            const modelText = message.serverContent?.modelTurn?.parts?.find((p: any) => p.text)?.text;
             if (modelText) {
-                console.log("Model transcript:", modelText);
-                if (!transcriptRef.current.includes(`Mentor: ${modelText}`)) {
+                console.log("Model text response:", modelText);
+                if (!transcriptRef.current.endsWith(`Mentor: ${modelText}`)) {
                   transcriptRef.current += `\nMentor: ${modelText}`;
                   onTranscriptUpdate(transcriptRef.current);
+                  // Force a re-render to show transcript if needed, 
+                  // but we are using onTranscriptUpdate which likely updates parent state
                 }
             }
 
-            // User transcription
+            // User transcription (from model's transcription of user audio)
             if (message.inputAudioTranscription?.text) {
                 const userText = message.inputAudioTranscription.text;
                 console.log("User transcript:", userText);
-                if (!transcriptRef.current.includes(`Student: ${userText}`)) {
+                if (!transcriptRef.current.endsWith(`Student: ${userText}`)) {
                   transcriptRef.current += `\nStudent: ${userText}`;
                   onTranscriptUpdate(transcriptRef.current);
                 }
@@ -313,13 +304,25 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.9 }}
-            className="flex flex-col items-center space-y-6"
+            className="flex flex-col items-center space-y-6 w-full"
           >
             <div className="relative">
               <div className="absolute inset-0 rounded-full bg-brand-400 animate-ping opacity-20" />
               <div className="w-24 h-24 rounded-full bg-brand-500 text-white flex items-center justify-center relative z-10">
-                <Volume2 className="w-10 h-10" />
+                <Mic className="w-10 h-10" />
               </div>
+            </div>
+
+            <div className="w-full max-h-60 overflow-y-auto p-4 bg-slate-50 rounded-xl space-y-3 text-left border border-slate-100">
+              {transcriptRef.current.split('\n').filter(Boolean).map((line, i) => (
+                <div key={i} className={`p-3 rounded-lg text-sm ${line.startsWith('Mentor:') ? 'bg-white border border-slate-100 text-slate-800' : 'bg-brand-50 text-brand-800 ml-4'}`}>
+                  <span className="font-bold mr-2">{line.split(':')[0]}:</span>
+                  {line.split(':').slice(1).join(':')}
+                </div>
+              ))}
+              {transcriptRef.current === "" && (
+                <p className="text-slate-400 text-center italic py-4">Waiting for mentor to start...</p>
+              )}
             </div>
             
             <div className="flex space-x-4">
