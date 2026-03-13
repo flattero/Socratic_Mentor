@@ -116,11 +116,64 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
   const setupAudioInput = async () => {
     if (!streamRef.current || !audioContextRef.current || !sessionRef.current) return;
 
+    try {
+      const workletCode = `
+        class AudioProcessor extends AudioWorkletProcessor {
+          process(inputs, outputs, parameters) {
+            const input = inputs[0];
+            if (input.length > 0) {
+              const floatData = input[0];
+              const pcmData = new Int16Array(floatData.length);
+              for (let i = 0; i < floatData.length; i++) {
+                pcmData[i] = Math.max(-1, Math.min(1, floatData[i])) * 0x7FFF;
+              }
+              this.port.postMessage(pcmData.buffer, [pcmData.buffer]);
+            }
+            return true;
+          }
+        }
+        registerProcessor('audio-processor', AudioProcessor);
+      `;
+
+      const blob = new Blob([workletCode], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      await audioContextRef.current.audioWorklet.addModule(url);
+      
+      const source = audioContextRef.current.createMediaStreamSource(streamRef.current);
+      const workletNode = new AudioWorkletNode(audioContextRef.current, 'audio-processor');
+
+      workletNode.port.onmessage = (event) => {
+        if (isMuted || !sessionRef.current) return;
+        
+        const arrayBuffer = event.data;
+        const uint8Array = new Uint8Array(arrayBuffer);
+        let binary = "";
+        for (let i = 0; i < uint8Array.length; i++) {
+          binary += String.fromCharCode(uint8Array[i]);
+        }
+        const base64Data = btoa(binary);
+        
+        sessionRef.current.sendRealtimeInput({
+          media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
+        });
+      };
+
+      source.connect(workletNode);
+      workletNode.connect(audioContextRef.current.destination);
+    } catch (e) {
+      console.error("Failed to setup AudioWorklet:", e);
+      // Fallback to ScriptProcessor if Worklet fails
+      setupAudioInputFallback();
+    }
+  };
+
+  const setupAudioInputFallback = () => {
+    if (!streamRef.current || !audioContextRef.current || !sessionRef.current) return;
+
     const source = audioContextRef.current.createMediaStreamSource(streamRef.current);
     const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
 
     source.connect(processor);
-    // Connect to a GainNode with 0 gain to keep processor alive without feedback
     const silentGain = audioContextRef.current.createGain();
     silentGain.gain.value = 0;
     processor.connect(silentGain);
@@ -135,7 +188,13 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
         pcmData[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
       }
       
-      const base64Data = btoa(String.fromCharCode(...new Uint8Array(pcmData.buffer)));
+      const uint8Array = new Uint8Array(pcmData.buffer);
+      let binary = "";
+      for (let i = 0; i < uint8Array.length; i++) {
+        binary += String.fromCharCode(uint8Array[i]);
+      }
+      const base64Data = btoa(binary);
+      
       sessionRef.current.sendRealtimeInput({
         media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
       });
