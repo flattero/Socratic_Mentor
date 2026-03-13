@@ -33,7 +33,29 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, key
     isMutedRef.current = newMuted;
   };
 
+  const [isKeyNeeded, setIsKeyNeeded] = useState(false);
+
+  useEffect(() => {
+    const checkKey = async () => {
+      if ((window as any).aistudio && !(await (window as any).aistudio.hasSelectedApiKey())) {
+        setIsKeyNeeded(true);
+      }
+    };
+    checkKey();
+  }, []);
+
+  const handleSelectKey = async () => {
+    if ((window as any).aistudio) {
+      await (window as any).aistudio.openSelectKey();
+      setIsKeyNeeded(false);
+    }
+  };
+
   const startSession = async () => {
+    if (isKeyNeeded) {
+      handleSelectKey();
+      return;
+    }
     setIsConnecting(true);
     setError(null);
     transcriptRef.current = "";
@@ -43,16 +65,17 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, key
     try {
       const ai = getAI();
       
-      audioContextRef.current = new AudioContext({ sampleRate: 16000 });
+      audioContextRef.current = new AudioContext({ sampleRate: 24000 });
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
       
       console.log("Connecting to Gemini Live API...");
       const session = await ai.live.connect({
-        model: "gemini-2.5-flash-native-audio-preview-12-2025",
+        model: "gemini-2.5-flash-native-audio-preview-09-2025",
         config: {
-          responseModalities: [Modality.TEXT],
+          responseModalities: [Modality.AUDIO],
           inputAudioTranscription: {},
-          systemInstruction: `${SYSTEM_INSTRUCTION}\n\nTASK CONTEXT:\n${taskSummary}\n\nADDITIONAL VOICE RULES:\n1. Start with a friendly greeting and ask the first question to get the student started.\n2. Respond ONLY with text. Do not generate audio.`,
+          outputAudioTranscription: {},
+          systemInstruction: `${SYSTEM_INSTRUCTION}\n\nTASK CONTEXT:\n${taskSummary}\n\nADDITIONAL VOICE RULES:\n1. Start with a friendly greeting and ask the first question to get the student started.\n2. Keep your responses brief as this is a voice conversation.`,
         },
         callbacks: {
           onopen: () => {
@@ -70,28 +93,39 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, key
           },
           onmessage: async (rawMessage: LiveServerMessage) => {
             const message = rawMessage as any;
-            console.log("Live message received:", message);
             
-            // Handle transcriptions from model
-            const modelText = message.serverContent?.modelTurn?.parts?.find((p: any) => p.text)?.text;
-            if (modelText) {
-                console.log("Model text response:", modelText);
+            // Handle audio output
+            const base64Audio = message.serverContent?.modelTurn?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
+            if (base64Audio) {
+              playAudioChunk(base64Audio);
+            }
+
+            // Handle transcriptions from model (output)
+            if (message.serverContent?.modelTurn?.parts) {
+              const textPart = message.serverContent.modelTurn.parts.find((p: any) => p.text);
+              if (textPart?.text) {
+                const modelText = textPart.text;
                 if (!transcriptRef.current.endsWith(`Mentor: ${modelText}`)) {
                   transcriptRef.current += `\nMentor: ${modelText}`;
                   setTranscript(transcriptRef.current);
                   onTranscriptUpdate(transcriptRef.current);
                 }
+              }
             }
 
             // User transcription (from model's transcription of user audio)
             if (message.inputAudioTranscription?.text) {
                 const userText = message.inputAudioTranscription.text;
-                console.log("User transcript:", userText);
                 if (!transcriptRef.current.endsWith(`Student: ${userText}`)) {
                   transcriptRef.current += `\nStudent: ${userText}`;
                   setTranscript(transcriptRef.current);
                   onTranscriptUpdate(transcriptRef.current);
                 }
+            }
+            
+            // Handle interruption
+            if (message.serverContent?.interrupted) {
+              stopAudioPlayback();
             }
           },
           onclose: () => {
@@ -113,6 +147,59 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, key
       setError("Could not access microphone or connect to AI.");
       setIsConnecting(false);
     }
+  };
+
+  const audioQueue = useRef<Int16Array[]>([]);
+  const isPlaying = useRef(false);
+  const nextStartTime = useRef(0);
+
+  const playAudioChunk = (base64Data: string) => {
+    const binary = atob(base64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const pcmData = new Int16Array(bytes.buffer);
+    audioQueue.current.push(pcmData);
+    if (!isPlaying.current) {
+      processAudioQueue();
+    }
+  };
+
+  const processAudioQueue = async () => {
+    if (audioQueue.current.length === 0 || !audioContextRef.current) {
+      isPlaying.current = false;
+      return;
+    }
+
+    isPlaying.current = true;
+    const pcmData = audioQueue.current.shift()!;
+    const floatData = new Float32Array(pcmData.length);
+    for (let i = 0; i < pcmData.length; i++) {
+      floatData[i] = pcmData[i] / 0x7FFF;
+    }
+
+    const buffer = audioContextRef.current.createBuffer(1, floatData.length, 24000);
+    buffer.getChannelData(0).set(floatData);
+
+    const source = audioContextRef.current.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContextRef.current.destination);
+
+    const now = audioContextRef.current.currentTime;
+    const startTime = Math.max(now, nextStartTime.current);
+    source.start(startTime);
+    nextStartTime.current = startTime + buffer.duration;
+
+    source.onended = () => {
+      processAudioQueue();
+    };
+  };
+
+  const stopAudioPlayback = () => {
+    audioQueue.current = [];
+    isPlaying.current = false;
+    nextStartTime.current = 0;
   };
 
   const setupAudioInput = async () => {
@@ -168,9 +255,11 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, key
         }
         chunkCount++;
 
-        sessionRef.current.sendRealtimeInput({
-          media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
-        });
+        if (sessionRef.current && sessionRef.current.readyState === WebSocket.OPEN) {
+          sessionRef.current.sendRealtimeInput({
+            media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
+          });
+        }
       };
 
       source.connect(workletNode);
@@ -211,9 +300,11 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, key
       }
       const base64Data = btoa(binary);
       
-      sessionRef.current.sendRealtimeInput({
-        media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
-      });
+      if (sessionRef.current && (sessionRef.current as any).readyState === WebSocket.OPEN) {
+        sessionRef.current.sendRealtimeInput({
+          media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
+        });
+      }
     };
   };
 
