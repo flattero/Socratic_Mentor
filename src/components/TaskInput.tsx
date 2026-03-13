@@ -68,7 +68,7 @@ export const TaskInput: React.FC<TaskInputProps> = ({ onTaskAnalyzed }) => {
       className="max-w-2xl mx-auto space-y-8 p-8 bg-white rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100"
     >
       <div className="text-center space-y-2">
-        <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Set Your Goal</h2>
+        <h2 className="text-3xl font-bold text-slate-900 tracking-tight">What Would You Like To Learn?</h2>
         <p className="text-slate-500">Paste your assessment criteria or upload a task document to begin.</p>
       </div>
 
