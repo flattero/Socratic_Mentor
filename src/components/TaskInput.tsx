@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { Upload, FileText, ArrowRight, Loader2, X } from 'lucide-react';
-import { analyzeTask } from '../services/ai';
+import { analyzeTask, TaskAnalysis } from '../services/ai';
 import { motion } from 'motion/react';
 
 interface TaskInputProps {
-  onTaskAnalyzed: (summary: string) => void;
+  onTaskAnalyzed: (analysis: TaskAnalysis) => void;
 }
 
 export const TaskInput: React.FC<TaskInputProps> = ({ onTaskAnalyzed }) => {
@@ -51,8 +51,8 @@ export const TaskInput: React.FC<TaskInputProps> = ({ onTaskAnalyzed }) => {
         };
       }
 
-      const summary = await analyzeTask(text, fileData);
-      onTaskAnalyzed(summary || "Task analyzed successfully.");
+      const analysis = await analyzeTask(text, fileData);
+      onTaskAnalyzed(analysis);
     } catch (err) {
       console.error("Analysis error:", err);
       setError("Failed to analyze the task. Please try again.");

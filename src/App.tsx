@@ -2,32 +2,73 @@ import { useState } from 'react';
 import { TaskInput } from './components/TaskInput';
 import { ChatInterface } from './components/ChatInterface';
 import { VoiceInterface } from './components/VoiceInterface';
-import { Message } from './services/ai';
+import { Message, TaskAnalysis, generateFeedback } from './services/ai';
 import { generatePDF } from './services/pdf';
 import { motion, AnimatePresence } from 'motion/react';
-import { GraduationCap, MessageSquare, Mic, Download, RefreshCw } from 'lucide-react';
+import { GraduationCap, MessageSquare, Mic, Download, RefreshCw, Sparkles, Loader2 } from 'lucide-react';
 
 type AppState = 'input' | 'mode-selection' | 'chat' | 'voice' | 'summary';
 
 export default function App() {
   const [state, setState] = useState<AppState>('input');
   const [taskSummary, setTaskSummary] = useState('');
+  const [keyTerms, setKeyTerms] = useState<string[]>([]);
   const [sessionMessages, setSessionMessages] = useState<Message[]>([]);
   const [voiceTranscript, setVoiceTranscript] = useState('');
+  const [feedback, setFeedback] = useState('');
+  const [isGeneratingFeedback, setIsGeneratingFeedback] = useState(false);
 
-  const handleTaskAnalyzed = (summary: string) => {
-    setTaskSummary(summary);
+  const handleTaskAnalyzed = (analysis: TaskAnalysis) => {
+    setTaskSummary(analysis.summary);
+    setKeyTerms(analysis.keyTerms);
     setState('mode-selection');
   };
 
-  const handleSessionEnd = (messages: Message[]) => {
+  const handleSessionEnd = async (messages: Message[]) => {
     setSessionMessages(messages);
     setState('summary');
+    setIsGeneratingFeedback(true);
+    try {
+      const result = await generateFeedback(messages, taskSummary);
+      setFeedback(result);
+    } catch (error) {
+      console.error("Feedback error:", error);
+      setFeedback("Great job completing the session! Your transcript is ready for download.");
+    } finally {
+      setIsGeneratingFeedback(false);
+    }
+  };
+
+  const handleVoiceSessionEnd = async () => {
+    if (!voiceTranscript || voiceTranscript.trim() === "") {
+      setState('mode-selection');
+      return;
+    }
+
+    const lines = voiceTranscript.split('\n').filter(l => l.trim());
+    const messages: Message[] = lines.map(line => {
+      if (line.startsWith('Mentor:')) return { role: 'model', content: line.replace('Mentor:', '').trim() };
+      if (line.startsWith('Student:')) return { role: 'user', content: line.replace('Student:', '').trim() };
+      return { role: 'user', content: line.trim() };
+    });
+    
+    setSessionMessages(messages);
+    setState('summary');
+    setIsGeneratingFeedback(true);
+    try {
+      const result = await generateFeedback(messages, taskSummary);
+      setFeedback(result);
+    } catch (error) {
+      console.error("Feedback error:", error);
+      setFeedback("Great job completing the session! Your transcript is ready for download.");
+    } finally {
+      setIsGeneratingFeedback(false);
+    }
   };
 
   const handleDownloadPDF = () => {
     if (state === 'summary' && sessionMessages.length > 0) {
-      generatePDF(sessionMessages, taskSummary);
+      generatePDF(sessionMessages, taskSummary, feedback);
     } else if (voiceTranscript) {
       // Convert voice transcript to Message format for PDF generator
       const lines = voiceTranscript.split('\n').filter(l => l.trim());
@@ -36,15 +77,18 @@ export default function App() {
         if (line.startsWith('Student:')) return { role: 'user', content: line.replace('Student:', '').trim() };
         return { role: 'user', content: line.trim() };
       });
-      generatePDF(messages, taskSummary);
+      generatePDF(messages, taskSummary, feedback);
     }
   };
 
   const reset = () => {
     setState('input');
     setTaskSummary('');
+    setKeyTerms([]);
     setSessionMessages([]);
     setVoiceTranscript('');
+    setFeedback('');
+    setIsGeneratingFeedback(false);
   };
 
   return (
@@ -68,7 +112,7 @@ export default function App() {
         )}
       </header>
 
-      <main className="flex-1 container mx-auto px-4 py-12 max-w-4xl">
+      <main className={`flex-1 container mx-auto px-4 py-12 ${state === 'voice' ? 'max-w-6xl' : 'max-w-4xl'}`}>
         <AnimatePresence mode="wait">
           {state === 'input' && (
             <TaskInput key="input" onTaskAnalyzed={handleTaskAnalyzed} />
@@ -118,6 +162,15 @@ export default function App() {
               <div className="p-6 bg-brand-50 rounded-2xl text-left">
                 <h4 className="text-sm font-bold text-brand-800 uppercase tracking-wider mb-2">Task Analysis Summary</h4>
                 <p className="text-brand-900 text-sm leading-relaxed">{taskSummary}</p>
+                {keyTerms.length > 0 && (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {keyTerms.map((term, i) => (
+                      <span key={i} className="px-2 py-1 bg-brand-100 text-brand-700 rounded-lg text-xs font-medium">
+                        {term}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             </motion.div>
           )}
@@ -143,14 +196,16 @@ export default function App() {
             >
               <VoiceInterface 
                 taskSummary={taskSummary} 
+                keyTerms={keyTerms}
                 onTranscriptUpdate={setVoiceTranscript} 
+                onSessionEnd={handleVoiceSessionEnd}
               />
               <div className="text-center">
                 <button 
-                  onClick={() => setState('summary')}
+                  onClick={handleVoiceSessionEnd}
                   className="text-brand-600 font-medium hover:underline"
                 >
-                  End Voice Session & Download Transcript
+                  End Voice Session & Get Feedback
                 </button>
               </div>
             </motion.div>
@@ -161,27 +216,51 @@ export default function App() {
               key="summary"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="max-w-md mx-auto text-center space-y-8 p-12 bg-white rounded-3xl shadow-xl border border-slate-100"
+              className="max-w-2xl mx-auto text-center space-y-8 p-12 bg-white rounded-3xl shadow-xl border border-slate-100"
             >
               <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto">
-                <Download size={40} />
+                <Sparkles size={40} />
               </div>
-              <div className="space-y-2">
+              <div className="space-y-4">
                 <h2 className="text-3xl font-bold text-slate-900">Session Complete</h2>
-                <p className="text-slate-500">You've successfully demonstrated your understanding. Download your transcript below.</p>
+                
+                <div className="p-6 bg-brand-50 rounded-2xl text-left border border-brand-100 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-2 opacity-10">
+                    <GraduationCap size={64} />
+                  </div>
+                  <h3 className="text-sm font-bold text-brand-800 uppercase tracking-wider mb-3 flex items-center">
+                    <Sparkles size={16} className="mr-2" />
+                    Mentor Feedback
+                  </h3>
+                  {isGeneratingFeedback ? (
+                    <div className="flex items-center space-x-3 text-brand-600 py-4">
+                      <Loader2 size={20} className="animate-spin" />
+                      <span className="font-medium">Mentor is reflecting on your progress...</span>
+                    </div>
+                  ) : (
+                    <div className="text-brand-900 leading-relaxed whitespace-pre-wrap italic">
+                      {feedback || "Great job completing the session! Your transcript is ready for download."}
+                    </div>
+                  )}
+                </div>
               </div>
-              <button
-                onClick={handleDownloadPDF}
-                className="w-full py-4 bg-brand-500 text-white rounded-2xl font-bold hover:bg-brand-600 transition-all shadow-lg shadow-brand-100"
-              >
-                Download PDF Transcript
-              </button>
-              <button
-                onClick={reset}
-                className="text-slate-500 font-medium hover:text-slate-800"
-              >
-                Start a New Session
-              </button>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <button
+                  onClick={handleDownloadPDF}
+                  className="py-4 bg-brand-500 text-white rounded-2xl font-bold hover:bg-brand-600 transition-all shadow-lg shadow-brand-100 flex items-center justify-center space-x-2"
+                >
+                  <Download size={20} />
+                  <span>Download PDF</span>
+                </button>
+                <button
+                  onClick={reset}
+                  className="py-4 bg-slate-100 text-slate-700 rounded-2xl font-bold hover:bg-slate-200 transition-all flex items-center justify-center space-x-2"
+                >
+                  <RefreshCw size={20} />
+                  <span>New Session</span>
+                </button>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>

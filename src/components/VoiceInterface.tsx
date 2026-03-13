@@ -3,18 +3,22 @@ import { LiveServerMessage, Modality } from "@google/genai";
 import { Mic, MicOff, Volume2, VolumeX, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getAI } from '../services/ai';
+import { KeyTermsList } from './KeyTermsList';
 
 interface VoiceInterfaceProps {
   taskSummary: string;
+  keyTerms: string[];
   onTranscriptUpdate: (transcript: string) => void;
+  onSessionEnd?: () => void;
 }
 
-export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onTranscriptUpdate }) => {
+export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, keyTerms, onTranscriptUpdate, onSessionEnd }) => {
   const [isConnecting, setIsConnecting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const isMutedRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  const [transcript, setTranscript] = useState<string>("");
   
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -33,6 +37,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
     setIsConnecting(true);
     setError(null);
     transcriptRef.current = "";
+    setTranscript("");
     onTranscriptUpdate("");
     
     try {
@@ -82,9 +87,8 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
                 console.log("Model text response:", modelText);
                 if (!transcriptRef.current.endsWith(`Mentor: ${modelText}`)) {
                   transcriptRef.current += `\nMentor: ${modelText}`;
+                  setTranscript(transcriptRef.current);
                   onTranscriptUpdate(transcriptRef.current);
-                  // Force a re-render to show transcript if needed, 
-                  // but we are using onTranscriptUpdate which likely updates parent state
                 }
             }
 
@@ -94,6 +98,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
                 console.log("User transcript:", userText);
                 if (!transcriptRef.current.endsWith(`Student: ${userText}`)) {
                   transcriptRef.current += `\nStudent: ${userText}`;
+                  setTranscript(transcriptRef.current);
                   onTranscriptUpdate(transcriptRef.current);
                 }
             }
@@ -232,46 +237,14 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
     }
   };
 
-  const playAudio = async (base64Data: string) => {
-    if (!audioContextRef.current) return;
-    
-    try {
-      const binaryString = atob(base64Data);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      
-      const pcmData = new Int16Array(bytes.buffer);
-      const floatData = new Float32Array(pcmData.length);
-      for (let i = 0; i < pcmData.length; i++) {
-        floatData[i] = pcmData[i] / 0x7FFF;
-      }
-      
-      const buffer = audioContextRef.current.createBuffer(1, floatData.length, 16000);
-      buffer.getChannelData(0).set(floatData);
-      
-      const source = audioContextRef.current.createBufferSource();
-      source.buffer = buffer;
-      source.connect(audioContextRef.current.destination);
-      
-      const now = audioContextRef.current.currentTime;
-      if (nextStartTimeRef.current < now) {
-        nextStartTimeRef.current = now;
-      }
-      
-      source.start(nextStartTimeRef.current);
-      nextStartTimeRef.current += buffer.duration;
-    } catch (e) {
-      console.error("Error playing audio chunk:", e);
-    }
-  };
-
   const stopSession = () => {
     if (sessionRef.current) {
       sessionRef.current.close();
     }
     setIsConnected(false);
+    if (onSessionEnd) {
+      onSessionEnd();
+    }
   };
 
   useEffect(() => {
@@ -279,74 +252,84 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
   }, []);
 
   return (
-    <div className="flex flex-col items-center justify-center p-8 space-y-6 bg-white rounded-2xl shadow-sm border border-slate-100">
-      <div className="text-center space-y-2">
-        <h3 className="text-xl font-semibold text-slate-800">Voice Conversation</h3>
-        <p className="text-slate-500 text-sm">Speak naturally with your mentor to demonstrate your knowledge.</p>
-      </div>
-
+    <div className="w-full">
       <AnimatePresence mode="wait">
         {!isConnected ? (
-          <motion.button
-            key="start"
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            onClick={startSession}
-            disabled={isConnecting}
-            className="w-24 h-24 rounded-full bg-brand-500 text-white flex items-center justify-center shadow-lg shadow-brand-200 hover:bg-brand-600 transition-colors disabled:opacity-50"
-          >
-            {isConnecting ? <Loader2 className="w-10 h-10 animate-spin" /> : <Mic className="w-10 h-10" />}
-          </motion.button>
+          <div className="flex flex-col items-center justify-center p-12 space-y-6 bg-white rounded-3xl shadow-sm border border-slate-100">
+            <div className="text-center space-y-2">
+              <h3 className="text-2xl font-bold text-slate-800">Voice Conversation</h3>
+              <p className="text-slate-500">Speak naturally with your mentor to demonstrate your knowledge.</p>
+            </div>
+            <motion.button
+              key="start"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              onClick={startSession}
+              disabled={isConnecting}
+              className="w-24 h-24 rounded-full bg-brand-500 text-white flex items-center justify-center shadow-lg shadow-brand-200 hover:bg-brand-600 transition-colors disabled:opacity-50"
+            >
+              {isConnecting ? <Loader2 className="w-10 h-10 animate-spin" /> : <Mic className="w-10 h-10" />}
+            </motion.button>
+          </div>
         ) : (
-          <motion.div
-            key="active"
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            className="flex flex-col items-center space-y-6 w-full"
-          >
-            <div className="relative">
-              <div className="absolute inset-0 rounded-full bg-brand-400 animate-ping opacity-20" />
-              <div className="w-24 h-24 rounded-full bg-brand-500 text-white flex items-center justify-center relative z-10">
-                <Mic className="w-10 h-10" />
-              </div>
-            </div>
-
-            <div className="w-full max-h-60 overflow-y-auto p-4 bg-slate-50 rounded-xl space-y-3 text-left border border-slate-100">
-              {transcriptRef.current.split('\n').filter(Boolean).map((line, i) => (
-                <div key={i} className={`p-3 rounded-lg text-sm ${line.startsWith('Mentor:') ? 'bg-white border border-slate-100 text-slate-800' : 'bg-brand-50 text-brand-800 ml-4'}`}>
-                  <span className="font-bold mr-2">{line.split(':')[0]}:</span>
-                  {line.split(':').slice(1).join(':')}
+          <div className="grid lg:grid-cols-3 gap-8 items-start">
+            <motion.div
+              key="active"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              className="lg:col-span-2 flex flex-col items-center space-y-6 p-8 bg-white rounded-3xl shadow-sm border border-slate-100"
+            >
+              <div className="relative">
+                <div className="absolute inset-0 rounded-full bg-brand-400 animate-ping opacity-20" />
+                <div className="w-24 h-24 rounded-full bg-brand-500 text-white flex items-center justify-center relative z-10">
+                  <Mic className="w-10 h-10" />
                 </div>
-              ))}
-              {transcriptRef.current === "" && (
-                <p className="text-slate-400 text-center italic py-4">Waiting for mentor to start...</p>
-              )}
-            </div>
-            
-            <div className="flex space-x-4">
-              <button
-                onClick={toggleMute}
-                className={cn(
-                  "p-4 rounded-full transition-colors",
-                  isMuted ? "bg-red-100 text-red-600" : "bg-slate-100 text-slate-600"
+              </div>
+
+              <div className="w-full max-h-[400px] overflow-y-auto p-6 bg-slate-50 rounded-2xl space-y-4 text-left border border-slate-100">
+                {transcript.split('\n').filter(Boolean).map((line, i) => (
+                  <div key={i} className={`p-4 rounded-2xl text-sm leading-relaxed ${line.startsWith('Mentor:') ? 'bg-white border border-slate-100 text-slate-800 shadow-sm' : 'bg-brand-50 text-brand-800 ml-8'}`}>
+                    <span className="font-bold mr-2">{line.split(':')[0]}:</span>
+                    {line.split(':').slice(1).join(':')}
+                  </div>
+                ))}
+                {transcript === "" && (
+                  <p className="text-slate-400 text-center italic py-8">Waiting for mentor to start...</p>
                 )}
-              >
-                {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
-              </button>
-              <button
-                onClick={stopSession}
-                className="px-6 py-2 bg-slate-800 text-white rounded-full font-medium hover:bg-slate-900 transition-colors"
-              >
-                End Session
-              </button>
-            </div>
-          </motion.div>
+              </div>
+              
+              <div className="flex space-x-4">
+                <button
+                  onClick={toggleMute}
+                  className={cn(
+                    "p-4 rounded-full transition-colors",
+                    isMuted ? "bg-red-100 text-red-600" : "bg-slate-100 text-slate-600"
+                  )}
+                >
+                  {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+                </button>
+                <button
+                  onClick={stopSession}
+                  className="px-8 py-3 bg-slate-800 text-white rounded-full font-bold hover:bg-slate-900 transition-colors shadow-lg shadow-slate-200"
+                >
+                  End Session
+                </button>
+              </div>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              className="h-full"
+            >
+              <KeyTermsList terms={keyTerms} transcript={transcript} />
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
-      {error && <p className="text-red-500 text-sm">{error}</p>}
+      {error && <p className="mt-4 text-red-500 text-sm text-center font-medium">{error}</p>}
     </div>
   );
 };
