@@ -20,9 +20,13 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
   const sessionRef = useRef<any>(null);
   const transcriptRef = useRef<string>("");
 
+  const nextStartTimeRef = useRef<number>(0);
+
   const startSession = async () => {
     setIsConnecting(true);
     setError(null);
+    transcriptRef.current = "";
+    onTranscriptUpdate("");
     
     try {
       const ai = getAI();
@@ -39,7 +43,7 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
           },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
-          systemInstruction: `You are a Socratic Mentor. Guide the student through a voice conversation to demonstrate their understanding.
+          systemInstruction: `You are a Socratic Mentor. Your goal is to help the student demonstrate their understanding of the task.
           
           TASK CONTEXT:
           ${taskSummary}
@@ -47,46 +51,49 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
           RULES:
           1. DO NOT provide answers.
           2. Ask one question at a time.
-          3. Start simple, then get complex.
-          4. Be encouraging.
-          5. Keep responses short for voice interaction.`,
+          3. Start with a friendly greeting and ask the first question to get the student started.
+          4. Keep responses concise for voice interaction.`,
         },
         callbacks: {
           onopen: () => {
+            console.log("Live session opened");
             setIsConnected(true);
             setIsConnecting(false);
+            if (audioContextRef.current?.state === 'suspended') {
+              audioContextRef.current.resume();
+            }
             setupAudioInput();
           },
-          onmessage: async (message: LiveServerMessage) => {
+          onmessage: async (rawMessage: LiveServerMessage) => {
+            const message = rawMessage as any;
+            console.log("Live message received:", message);
+            
             // Handle audio output
-            if (message.serverContent?.modelTurn?.parts[0]?.inlineData?.data) {
-              const base64Audio = message.serverContent.modelTurn.parts[0].inlineData.data;
-              playAudio(base64Audio);
+            const audioData = message.serverContent?.modelTurn?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
+            if (audioData) {
+              playAudio(audioData);
             }
             
             // Handle transcriptions
-            // @ts-ignore - types might be slightly off for latest Live API
-            if (message.serverContent?.modelTurn?.parts[0]?.text || message.outputAudioTranscription?.text) {
-                // @ts-ignore
-                const text = message.serverContent?.modelTurn?.parts[0]?.text || message.outputAudioTranscription?.text;
-                if (text && !transcriptRef.current.endsWith(text)) {
-                  transcriptRef.current += `\nMentor: ${text}`;
+            const modelText = message.serverContent?.modelTurn?.parts?.find((p: any) => p.text)?.text || message.outputAudioTranscription?.text;
+            if (modelText) {
+                if (!transcriptRef.current.includes(`Mentor: ${modelText}`)) {
+                  transcriptRef.current += `\nMentor: ${modelText}`;
                   onTranscriptUpdate(transcriptRef.current);
                 }
             }
 
             // User transcription
-            // @ts-ignore
             if (message.inputAudioTranscription?.text) {
-                // @ts-ignore
-                const text = message.inputAudioTranscription.text;
-                if (text && !transcriptRef.current.endsWith(text)) {
-                  transcriptRef.current += `\nStudent: ${text}`;
+                const userText = message.inputAudioTranscription.text;
+                if (!transcriptRef.current.includes(`Student: ${userText}`)) {
+                  transcriptRef.current += `\nStudent: ${userText}`;
                   onTranscriptUpdate(transcriptRef.current);
                 }
             }
           },
           onclose: () => {
+            console.log("Live session closed");
             setIsConnected(false);
             stopAudioInput();
           },
@@ -113,10 +120,14 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
     const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
 
     source.connect(processor);
-    processor.connect(audioContextRef.current.destination);
+    // Connect to a GainNode with 0 gain to keep processor alive without feedback
+    const silentGain = audioContextRef.current.createGain();
+    silentGain.gain.value = 0;
+    processor.connect(silentGain);
+    silentGain.connect(audioContextRef.current.destination);
 
     processor.onaudioprocess = (e) => {
-      if (isMuted) return;
+      if (isMuted || !sessionRef.current) return;
       
       const inputData = e.inputBuffer.getChannelData(0);
       const pcmData = new Int16Array(inputData.length);
@@ -134,34 +145,47 @@ export const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ taskSummary, onT
   const stopAudioInput = () => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
     }
     if (audioContextRef.current) {
       audioContextRef.current.close();
+      audioContextRef.current = null;
     }
   };
 
   const playAudio = async (base64Data: string) => {
     if (!audioContextRef.current) return;
     
-    const binaryString = atob(base64Data);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+    try {
+      const binaryString = atob(base64Data);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      
+      const pcmData = new Int16Array(bytes.buffer);
+      const floatData = new Float32Array(pcmData.length);
+      for (let i = 0; i < pcmData.length; i++) {
+        floatData[i] = pcmData[i] / 0x7FFF;
+      }
+      
+      const buffer = audioContextRef.current.createBuffer(1, floatData.length, 16000);
+      buffer.getChannelData(0).set(floatData);
+      
+      const source = audioContextRef.current.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioContextRef.current.destination);
+      
+      const now = audioContextRef.current.currentTime;
+      if (nextStartTimeRef.current < now) {
+        nextStartTimeRef.current = now;
+      }
+      
+      source.start(nextStartTimeRef.current);
+      nextStartTimeRef.current += buffer.duration;
+    } catch (e) {
+      console.error("Error playing audio chunk:", e);
     }
-    
-    const pcmData = new Int16Array(bytes.buffer);
-    const floatData = new Float32Array(pcmData.length);
-    for (let i = 0; i < pcmData.length; i++) {
-      floatData[i] = pcmData[i] / 0x7FFF;
-    }
-    
-    const buffer = audioContextRef.current.createBuffer(1, floatData.length, 16000);
-    buffer.getChannelData(0).set(floatData);
-    
-    const source = audioContextRef.current.createBufferSource();
-    source.buffer = buffer;
-    source.connect(audioContextRef.current.destination);
-    source.start();
   };
 
   const toggleMute = () => setIsMuted(!isMuted);
